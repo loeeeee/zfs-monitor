@@ -50,6 +50,13 @@ _ZED_KEEP = re.compile(
 # Classes that are journaled to events.jsonl when they first appear.
 _ZED_JOURNAL = re.compile(r"^ereport\.|^resource\.")
 
+# `zpool history -i` scan records: "<local %F.%T> [txg:N] scan setup func=1 ..."
+# (func 1 = scrub), then "scan done", "scan cancelled" or "scan aborted, ...".
+_HISTORY_SCAN = re.compile(
+    r"^(\d{4}-\d\d-\d\d\.\d\d:\d\d:\d\d) \[txg:\d+\] "
+    r"scan (?:setup func=(\d+)|(done|cancelled|aborted))")
+_POOL_SCAN_SCRUB = 1
+
 # NVMe self-test results meaning the test failed (not merely aborted).
 _NVME_SELFTEST_FAILED = {5, 6, 7}
 
@@ -289,6 +296,27 @@ class Collector:
         except ValueError:
             return None
 
+    def _last_scrub_from_history(self, pool: str) -> Optional[int]:
+        """End of the last completed scrub per the pool's internal history.
+        Used when none is remembered: zpool status only shows the latest
+        scan, which may be a resilver or a cancelled/running scrub."""
+        rc, out = self.run(["zpool", "history", "-i", pool])
+        if rc != 0:
+            return None
+        func, last = None, None
+        for line in out.splitlines():
+            m = _HISTORY_SCAN.match(line)
+            if not m:
+                continue
+            if m.group(2) is not None:
+                func = int(m.group(2))
+                continue
+            if m.group(3) == "done" and func == _POOL_SCAN_SCRUB:
+                last = int(datetime.strptime(
+                    m.group(1), "%Y-%m-%d.%H:%M:%S").timestamp())
+            func = None
+        return last
+
     @staticmethod
     def _scan(pool: dict) -> tuple[dict | None, dict]:
         """(scan, stats). `zpool status -j` puts the scan under `scan_stats`;
@@ -351,6 +379,10 @@ class Collector:
                     and str(scan.get("state") or "").upper() == "FINISHED"
                     and scan.get("end_time")):
                 last_scrub[name] = scan["end_time"]
+            elif last_scrub.get(name) is None:
+                found = self._last_scrub_from_history(name)
+                if found is not None:
+                    last_scrub[name] = found
 
             ckpt = pool.get("checkpoint_stats")
             st = {

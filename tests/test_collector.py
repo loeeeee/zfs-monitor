@@ -1,6 +1,7 @@
 import copy
 import json
 import os
+from datetime import datetime
 
 import pytest
 
@@ -315,6 +316,32 @@ def test_scrub_age_ignores_resilvers_and_running_scrubs(cfg):
     # No completed scrub on record: unknown, not 20 000 days.
     fresh = collect(cfg)
     assert fresh.pool_status(st)["tank"]["scan"]["days_since_last"] is None
+
+
+def test_scrub_age_falls_back_to_pool_history(cfg):
+    def at(days):
+        return datetime.fromtimestamp(NOW - days * 86400).strftime("%Y-%m-%d.%H:%M:%S")
+    history = "\n".join([
+        "History for 'tank':",
+        f"{at(40)} zpool create tank mirror sda sdb",
+        f"{at(30)} [txg:10] scan setup func=1 mintxg=0 maxtxg=10",
+        f"{at(29)} [txg:20] scan done errors=0",
+        f"{at(9)} zpool scrub tank",
+        f"{at(9)} [txg:30] scan setup func=1 mintxg=0 maxtxg=30",
+        f"{at(8)} [txg:40] scan done errors=0",
+        # Later: a cancelled scrub, an error scrub and a resilver.
+        f"{at(6)} [txg:50] scan setup func=1 mintxg=0 maxtxg=50",
+        f"{at(6)} [txg:51] scan cancelled errors=0",
+        f"{at(5)} [txg:60] error scrub setup func=3 mintxg=0 maxtxg=60",
+        f"{at(5)} [txg:61] error scrub done errors=0",
+        f"{at(2)} [txg:70] scan setup func=2 mintxg=3 maxtxg=70",
+        f"{at(1)} [txg:80] scan done errors=0",
+    ])
+    st = copy.deepcopy(ZPOOL_STATUS)
+    st["pools"]["tank"]["scan_stats"].update(function="RESILVER", end_time=NOW - 86400)
+    c = collect(cfg, overrides={"zpool history -i tank": (0, history)})
+    assert c.pool_status(st)["tank"]["scan"]["days_since_last"] == 8
+    assert c.state["last_scrub_end"]["tank"] == int(NOW - 8 * 86400)
 
 
 def test_removal_expansion_and_checkpoint(cfg):

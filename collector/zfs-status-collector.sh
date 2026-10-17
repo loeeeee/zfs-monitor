@@ -112,6 +112,18 @@ collect_pool_list_json() {
 
 # --- Pool status, scan, resilver, devices ---
 
+# Local "%F.%T" time of the last completed scrub in `zpool history -i`:
+# "scan setup func=1" (scrub) followed by "scan done".
+last_scrub_from_history() {
+    zpool history -i "$1" 2>/dev/null | awk '
+        $2 ~ /^\[txg:/ && $3 == "scan" {
+            if ($4 == "setup") { f = $5; next }
+            if ($4 == "done" && f == "func=1") last = $1
+            f = ""
+        }
+        END { if (last != "") print last }'
+}
+
 collect_pool_status_json() {
     if [ "$HAS_ZPOOL_STATUS_JSON" != true ]; then
         echo '{}'
@@ -127,7 +139,20 @@ collect_pool_status_json() {
         fi
     fi
 
-    echo "$raw" | jq '
+    # zpool status only shows the latest scan. When that is not a finished
+    # scrub (a resilver, or a cancelled/running scrub), take the end of the
+    # last completed scrub from the pool's internal history instead.
+    local hist='{}' pool ts epoch
+    for pool in $(echo "$raw" | jq -r '.pools // {} | to_entries[] | .value |
+            select((.scan_stats.function // "") != "SCRUB"
+                   or (.scan_stats.state // "") != "FINISHED") | .name'); do
+        ts=$(last_scrub_from_history "$pool")
+        [ -n "$ts" ] || continue
+        epoch=$(date -d "${ts/./ }" +%s 2>/dev/null) || continue
+        hist=$(echo "$hist" | jq --arg p "$pool" --argjson e "$epoch" '.[$p] = $e')
+    done
+
+    echo "$raw" | jq --argjson hist "$hist" '
         def walk_device:
             { name: ((.name // .path // .devid // "unknown") | tostring),
               type: (.vdev_type // "unknown"),
@@ -153,17 +178,16 @@ collect_pool_status_json() {
                 value: {
                     state: ($pool.state // "UNKNOWN"),
                     status_message: ($pool.comment // null),
-                    scan: (if $pool.scan then {
-                        state: ($pool.scan.state // null),
-                        errors: (($pool.scan.scan_stats // {}).errors // 0),
-                        repaired_bytes: (($pool.scan.scan_stats // {}).bytes_repaired // 0),
-                        days_since_last: (if $pool.scan.end_time then
-                            (if ($pool.scan.end_time | type) == "number" then
-                                ((now - $pool.scan.end_time) / 86400 | floor)
-                            else
-                                (((now - ($pool.scan.end_time | sub("  "; " "; "g") | strptime("%a %b %d %H:%M:%S %Y") | mktime)) / 86400) | floor)
-                            end)
-                        else null end)
+                    scan: (($pool.scan_stats // null) as $s | if $s then {
+                        state: ($s.state // null),
+                        function: ($s.function // null),
+                        errors: ($s.errors // 0),
+                        repaired_bytes: ($s.processed // 0),
+                        days_since_last: (
+                            (if $s.function == "SCRUB" and $s.state == "FINISHED"
+                                and ($s.end_time | type) == "number"
+                             then $s.end_time else $hist[$pool.name] end) as $end
+                            | if $end then ((now - $end) / 86400 | floor) else null end)
                     } else null end),
                     resilver: (if $pool.resilver then {
                         in_progress: (($pool.resilver.state // "none") == "active" or ($pool.resilver.state // "none") == "in_progress"),
@@ -610,12 +634,12 @@ build_events_json() {
     if [ "$HAS_ZPOOL_STATUS_JSON" = true ] && [ -n "$status_raw" ]; then
         scan_json=$(echo "$status_raw" | jq '
             [.pools | to_entries[] | .value |
-             select(.scan.state == "finished" or .scan.state == "completed") |
+             select(.scan_stats.function == "SCRUB" and .scan_stats.state == "FINISHED") |
              { pool: .name,
                event: "scrub_completed",
                timestamp: (now | todateiso8601),
-               errors: ((.scan.scan_stats // {}).errors // 0),
-               repaired_bytes: ((.scan.scan_stats // {}).bytes_repaired // 0)
+               errors: (.scan_stats.errors // 0),
+               repaired_bytes: (.scan_stats.processed // 0)
              }]
         ' 2>/dev/null || echo '[]')
 

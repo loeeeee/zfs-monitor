@@ -169,7 +169,7 @@ def compute_summary(data: dict, age: float, stale: bool, t: Thresholds) -> dict[
         "any_scan_errors": any((p.get("scan") or {}).get("errors", 0)
                                for p in pools.values()),
         # Pools with no completed scrub on record (never scrubbed, or the last
-        # scrub predates the collector's state).
+        # one has aged out of `zpool history`).
         "pools_scrub_age_unknown": [n for n, p in pools.items()
                                     if (p.get("scan") or {}).get("days_since_last") is None],
         "total_trim_errors": sum((p.get("trim") or {}).get("errors", 0)
