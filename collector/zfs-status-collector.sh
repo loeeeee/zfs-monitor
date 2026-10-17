@@ -189,11 +189,24 @@ collect_pool_status_json() {
                              then $s.end_time else $hist[$pool.name] end) as $end
                             | if $end then ((now - $end) / 86400 | floor) else null end)
                     } else null end),
-                    resilver: (if $pool.resilver then {
-                        in_progress: (($pool.resilver.state // "none") == "active" or ($pool.resilver.state // "none") == "in_progress"),
-                        progress_percent: ($pool.resilver.percent // null),
-                        eta_hours: (if $pool.resilver.eta then ($pool.resilver.eta / 3600) | floor else null end)
-                    } else {in_progress: false, progress_percent: null, eta_hours: null} end),
+                    # A healing resilver (the pool scan) or a sequential
+                    # rebuild (scan_stats.rebuild_stats).
+                    resilver: (($pool.scan_stats // {}) as $s |
+                        ([($s.rebuild_stats // {})[] | select(.state == "ACTIVE")]) as $rb |
+                        if $s.function == "RESILVER" and $s.state == "SCANNING" then
+                            {in_progress: true,
+                             progress_percent: (if ($s.to_examine // 0) > 0 then
+                                 ($s.examined // 0) / $s.to_examine * 1000 | round / 10
+                                 else null end),
+                             eta_hours: null}
+                        elif ($rb | length) > 0 then
+                            ([$rb[].to_scan // 0] | add) as $total |
+                            {in_progress: true,
+                             progress_percent: (if $total > 0 then
+                                 ([$rb[].scanned // 0] | add) / $total * 1000 | round / 10
+                                 else null end),
+                             eta_hours: null}
+                        else {in_progress: false, progress_percent: null, eta_hours: null} end),
                     devices: (
                         [child_vdevs($root_vdev) | select(is_data_vdev(.vdev_type // "")) | walk_device]
                     ),
