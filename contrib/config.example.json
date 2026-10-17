@@ -1,0 +1,5 @@
+{
+  "collector": { "output_dir": "/var/lib/zfs-monitor", "owner_uid": 101000, "owner_gid": 101000 },
+  "server": { "port": 8080 },
+  "thresholds": { "capacity_warning_percent": 80 }
+}

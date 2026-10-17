@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "zfs-monitor"
+version = "0.1.0"
+description = "Collect ZFS pool/SMART/snapshot health into a JSON report and serve it with a derived summary"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "loeeeee" }]
+dependencies = []
+
+[project.scripts]
+zfs-monitor = "zfs_monitor.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

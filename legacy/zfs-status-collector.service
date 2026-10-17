@@ -1,0 +1,8 @@
+[Unit]
+Description=Collect ZFS pool and snapshot status
+
+[Service]
+Type=oneshot
+ExecStartPre=-/usr/bin/mkdir -p /var/lock
+ExecStart=/usr/local/bin/zfs-status-collector.sh
+TimeoutSec=90

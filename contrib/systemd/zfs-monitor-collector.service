@@ -1,0 +1,10 @@
+# For non-NixOS hosts (e.g. Proxmox VE). Install the package with
+# `nix profile install <flake>` or copy the wrapped binary to /usr/local/bin,
+# put the config at /etc/zfs-monitor/config.json (see ../config.example.json).
+[Unit]
+Description=Collect ZFS pool, SMART and snapshot status
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/zfs-monitor --config /etc/zfs-monitor/config.json collect
+TimeoutStartSec=90
