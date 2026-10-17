@@ -1,6 +1,8 @@
 # For non-NixOS hosts (e.g. Proxmox VE). Install the package with
 # `nix profile install <flake>` or copy the wrapped binary to /usr/local/bin,
 # put the config at /etc/zfs-monitor/config.json (see ../config.example.json).
+# Set owner_uid/owner_gid to the uid the server runs as wherever it reads the
+# directory; the server half is zfs-monitor-server.service.
 [Unit]
 Description=Collect ZFS pool, SMART and snapshot status
 

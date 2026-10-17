@@ -24,15 +24,16 @@ The timer runs it every 120 seconds. Run it once by hand with
 
 ## Configuration
 
-Set these environment variables, for example in a drop-in made with
-`systemctl edit zfs-status-collector.service` (`[Service]` /
-`Environment=ZFS_MONITOR_UID=0`):
+Set these environment variables in `/etc/zfs-monitor/collector.env` (read by
+the unit if present), or in a drop-in made with
+`systemctl edit zfs-status-collector.service`:
 
 | Variable | Default | Meaning |
 |----------|---------|---------|
 | `ZFS_MONITOR_OUTPUT_DIR` | `/var/lib/zfs-monitor` | where `status.json` / `events.jsonl` go |
-| `ZFS_MONITOR_UID` | `101000` | owner of the written files |
-| `ZFS_MONITOR_GID` | `101000` | group of the written files |
+| `ZFS_MONITOR_UID` | `101000` | owner of the written files; set empty to leave ownership alone |
+| `ZFS_MONITOR_GID` | `101000` | group of the written files; set empty to leave ownership alone |
+| `ZFS_MONITOR_FILE_MODE` | `0644` | mode of the written files |
 
 `101000` is uid/gid 1000 inside an unprivileged Proxmox LXC. With that default,
 a server running in the container as a normal user can read a bind-mounted

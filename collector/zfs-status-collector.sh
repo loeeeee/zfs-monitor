@@ -15,8 +15,9 @@
 #
 # Environment overrides (e.g. via a systemd drop-in):
 #   ZFS_MONITOR_OUTPUT_DIR  output directory   (default /var/lib/zfs-monitor)
-#   ZFS_MONITOR_UID         owner of the files (default 101000)
-#   ZFS_MONITOR_GID         group of the files (default 101000)
+#   ZFS_MONITOR_UID         owner of the files (default 101000; empty: leave as is)
+#   ZFS_MONITOR_GID         group of the files (default 101000; empty: leave as is)
+#   ZFS_MONITOR_FILE_MODE   mode of the files  (default 0644)
 # 101000 is uid/gid 1000 inside an unprivileged Proxmox LXC, so a server
 # running there as a normal user can read a bind-mounted output dir.
 
@@ -27,8 +28,9 @@ readonly OUTPUT_FILE="${OUTPUT_DIR}/status.json"
 readonly EVENTS_FILE="${OUTPUT_DIR}/events.jsonl"
 readonly LOCK_FILE="${OUTPUT_DIR}/.collector.lock"
 readonly LOCK_FD=9
-readonly ZFS_USER="${ZFS_MONITOR_UID:-101000}"
-readonly ZFS_GROUP="${ZFS_MONITOR_GID:-101000}"
+readonly ZFS_USER="${ZFS_MONITOR_UID-101000}"
+readonly ZFS_GROUP="${ZFS_MONITOR_GID-101000}"
+readonly FILE_MODE="${ZFS_MONITOR_FILE_MODE:-0644}"
 
 SCRIPT_START_EPOCH=$(date +%s%3N)
 NOTICES=()
@@ -39,6 +41,14 @@ _init_ts() {
     local now
     now=$(date +%s%3N)
     echo $((now - SCRIPT_START_EPOCH))
+}
+
+# Hand an output file to the reader: mode, then owner (empty uid/gid = keep).
+_publish_perms() {
+    chmod "$FILE_MODE" "$1"
+    if [ -n "$ZFS_USER" ] || [ -n "$ZFS_GROUP" ]; then
+        chown "${ZFS_USER}:${ZFS_GROUP}" "$1"
+    fi
 }
 
 _notice() {
@@ -56,7 +66,7 @@ init() {
         exit 1
     fi
 
-    if zpool status -j rpool &>/dev/null; then
+    if zpool status -j &>/dev/null; then
         HAS_ZPOOL_STATUS_JSON=true
     fi
 
@@ -708,7 +718,7 @@ assemble_and_write() {
     local tmpfile
     tmpfile=$(mktemp -p "$OUTPUT_DIR" ".status.json.XXXXXX")
     echo "$final_json" > "$tmpfile"
-    chown "${ZFS_USER}:${ZFS_GROUP}" "$tmpfile"
+    _publish_perms "$tmpfile"
     mv "$tmpfile" "$OUTPUT_FILE"
 }
 
@@ -720,7 +730,7 @@ append_events() {
     count=$(echo "$events_json" | jq 'length' 2>/dev/null || echo 0)
     if [ "$count" -gt 0 ]; then
         echo "$events_json" | jq -c '.[]' >> "$EVENTS_FILE"
-        chown "${ZFS_USER}:${ZFS_GROUP}" "$EVENTS_FILE" 2>/dev/null || true
+        _publish_perms "$EVENTS_FILE" 2>/dev/null || true
     fi
 }
 

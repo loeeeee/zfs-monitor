@@ -59,6 +59,47 @@ one can feed `zfs-monitor serve`.
 Pure stdlib Python (≥ 3.11). The only tools it needs at runtime are `zpool`,
 `zfs` and `smartctl`.
 
+### The contract between the halves
+
+The only interface is the output directory (default `/var/lib/zfs-monitor`):
+
+| File | Written | Read by the server |
+|------|---------|--------------------|
+| `status.json` | replaced atomically (temp file + rename) on every successful run | yes; its mtime is the report's age |
+| `events.jsonl` | one JSON object per line, appended on state changes | no, for log shippers and humans |
+| `.collector.lock`, `.collector-state.json` | collector-internal | no |
+
+Both collectors write the published files with mode `0644` and chown them to a
+configurable owner (Python: `collector.owner_uid`/`owner_gid`, NixOS:
+`collector.fileOwner`, bash: `ZFS_MONITOR_UID`/`ZFS_MONITOR_GID`). Pick the
+uid the server runs as, as the host sees it.
+
+### Deployment: ZFS host + server in an LXC (Proxmox)
+
+On the host (root, has the pools):
+
+1. Install one collector, either `contrib/systemd/zfs-monitor-collector.{service,timer}`
+   with `contrib/config.example.json`, or the bash script in `collector/`.
+2. Set the owner to the container's mapped uid: uid 1000 inside an
+   unprivileged LXC is `101000` on the host (the default in both examples).
+3. Enable the timer: `systemctl enable --now zfs-monitor-collector.timer`
+   (bash: `zfs-status-collector.timer`).
+4. Bind-mount the directory into the container read-only:
+   `pct set <vmid> -mp0 /var/lib/zfs-monitor,mp=/var/lib/zfs-monitor,ro=1`.
+
+In the container (unprivileged, no ZFS tools needed):
+
+1. Install the package (`nix profile install <flake>` or `pip install .`).
+2. Copy `contrib/config.server.example.json` to `/etc/zfs-monitor/config.json`.
+3. Install `contrib/systemd/zfs-monitor-server.service` and
+   `systemctl enable --now zfs-monitor-server`.
+   On NixOS, use `services.zfs-monitor.server.enable = true` with
+   `collector.outputDir` set to the bind-mount path.
+
+Check from the container: `zfs-monitor -c /etc/zfs-monitor/config.json summary`.
+Keep `thresholds.max_stale_seconds` above the timer interval (default 300 s vs 120 s),
+so one slow run doesn't make the report go stale.
+
 ## Commands
 
 ```
@@ -238,7 +279,7 @@ Fields whose content changed because the old values were wrong:
 src/zfs_monitor/   collector, summary, HTTP server, config, CLI
 tests/             pytest suite (fake command runner, no ZFS needed)
 nix/               package and NixOS module
-contrib/           systemd units + example config for non-NixOS hosts
+contrib/           systemd units (collector + server) and example configs for non-NixOS hosts
 collector/         standalone bash + jq collector script with systemd units```
 
 ## Development

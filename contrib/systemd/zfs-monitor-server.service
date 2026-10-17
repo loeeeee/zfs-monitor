@@ -1,0 +1,35 @@
+# The serving half, for the guest that sees the collector's output directory
+# (e.g. an unprivileged LXC with the host's /var/lib/zfs-monitor bind-mounted
+# read-only). Install the package there (`nix profile install <flake>` or
+# `pip install .`) and put the config at /etc/zfs-monitor/config.json (see
+# ../config.server.example.json). Needs no root and no ZFS tools.
+[Unit]
+Description=ZFS monitor HTTP server
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/zfs-monitor --config /etc/zfs-monitor/config.json serve
+# Any unprivileged uid can read the collector's 0644 files. If you tighten
+# the file mode, replace this with User=/Group= matching the collector's
+# owner uid/gid as seen inside the guest (101000 on the host = 1000 here).
+DynamicUser=yes
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+# "-": the bind mount may appear after unit setup.
+ReadOnlyPaths=-/var/lib/zfs-monitor
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=true
+CapabilityBoundingSet=
+LockPersonality=true
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

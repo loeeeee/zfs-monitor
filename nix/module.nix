@@ -77,7 +77,11 @@ in
       outputDir = mkOption {
         type = types.path;
         default = "/var/lib/zfs-monitor";
-        description = "Directory receiving status.json and events.jsonl.";
+        description = ''
+          Directory receiving status.json and events.jsonl. The server reads
+          from it too, so on a server-only host (e.g. an LXC) set it to where
+          the collector's directory is bind-mounted.
+        '';
       };
       interval = mkOption {
         type = types.str;

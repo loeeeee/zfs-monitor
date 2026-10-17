@@ -3,6 +3,8 @@ Description=Collect ZFS pool and snapshot status
 
 [Service]
 Type=oneshot
+# Optional ZFS_MONITOR_* overrides (see the script header / README).
+EnvironmentFile=-/etc/zfs-monitor/collector.env
 ExecStartPre=-/usr/bin/mkdir -p /var/lock
 ExecStart=/usr/local/bin/zfs-status-collector.sh
 TimeoutSec=90
