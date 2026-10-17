@@ -11,6 +11,23 @@ the Python `zfs-monitor collect` use.
 
 ## Install
 
+As root on the ZFS host, from this directory:
+
+```
+./install.sh                          # owner 101000:101000 (uid 1000 in an unprivileged LXC)
+./install.sh --uid 100033 --gid 100033 --output-dir /var/lib/zfs-monitor
+./install.sh --no-chown               # leave the files owned by root
+./install.sh --dry-run                # show what it would do
+./install.sh --uninstall [--purge]    # --purge also removes the env file and output dir
+```
+
+It checks for `jq`, `flock` and `zpool -j` support, installs the script and
+units, writes the settings below to `/etc/zfs-monitor/collector.env`, enables
+the timer and runs one collection. Re-running it upgrades in place; the env
+file is only rewritten when a setting flag is given.
+
+Or by hand:
+
 ```
 cp zfs-status-collector.sh /usr/local/bin/
 chmod 755 /usr/local/bin/zfs-status-collector.sh

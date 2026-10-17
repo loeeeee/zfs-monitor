@@ -79,7 +79,8 @@ uid the server runs as, as the host sees it.
 On the host (root, has the pools):
 
 1. Install one collector, either `contrib/systemd/zfs-monitor-collector.{service,timer}`
-   with `contrib/config.example.json`, or the bash script in `collector/`.
+   with `contrib/config.example.json`, or the bash script in `collector/`
+   (`collector/install.sh --uid 101000 --gid 101000` does steps 2-3 for it).
 2. Set the owner to the container's mapped uid: uid 1000 inside an
    unprivileged LXC is `101000` on the host (the default in both examples).
 3. Enable the timer: `systemctl enable --now zfs-monitor-collector.timer`
