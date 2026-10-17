@@ -321,13 +321,15 @@ collect_snapshots_json() {
                 used: ($p.used.value | tonumber? // 0)
             }
         ] as $flat
+        | now as $now
         | {
             groups: ($flat | group_by(.dataset) | map({
                 dataset: .[0].dataset,
                 count: length,
                 newest_epoch: (max_by(.creation).creation),
                 oldest_epoch: (min_by(.creation).creation),
-                age_seconds: (now - (min_by(.creation).creation) | floor)
+                age_seconds: ($now - (min_by(.creation).creation) | floor),
+                newest_age_seconds: ($now - (max_by(.creation).creation) | floor)
             })),
             stats: {
                 total_count: ($flat | length),
