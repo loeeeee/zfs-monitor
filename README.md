@@ -33,8 +33,7 @@ zfs-monitor bridges that gap:
 The collector also ships as a standalone bash + jq script with a systemd
 timer, in [`collector/`](collector/), for hosts where you would rather not
 install Python or Nix. Both collectors write the same report schema, so either
-one can feed `zfs-monitor serve`. The original Python server is kept in
-[`legacy/`](legacy/) for reference.
+one can feed `zfs-monitor serve`.
 
 ## How it works
 
@@ -187,9 +186,7 @@ src/zfs_monitor/   collector, summary, HTTP server, config, CLI
 tests/             pytest suite (fake command runner, no ZFS needed)
 nix/               package and NixOS module
 contrib/           systemd units + example config for non-NixOS hosts
-collector/         standalone bash + jq collector script with systemd units
-legacy/            original Python server (schema reference)
-```
+collector/         standalone bash + jq collector script with systemd units```
 
 ## Development
 
