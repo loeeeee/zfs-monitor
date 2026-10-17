@@ -30,8 +30,11 @@ zfs-monitor bridges that gap:
   report is too old the server returns HTTP 503, so a dead collector shows up
   as a failure rather than as stale "all green".
 
-It replaces an earlier bash + jq collector and Python server (kept in
-[`legacy/`](legacy/)), and keeps their report schema compatible.
+The collector also ships as a standalone bash + jq script with a systemd
+timer, in [`collector/`](collector/), for hosts where you would rather not
+install Python or Nix. Both collectors write the same report schema, so either
+one can feed `zfs-monitor serve`. The original Python server is kept in
+[`legacy/`](legacy/) for reference.
 
 ## How it works
 
@@ -184,7 +187,8 @@ src/zfs_monitor/   collector, summary, HTTP server, config, CLI
 tests/             pytest suite (fake command runner, no ZFS needed)
 nix/               package and NixOS module
 contrib/           systemd units + example config for non-NixOS hosts
-legacy/            original bash collector and Python server (schema reference)
+collector/         standalone bash + jq collector script with systemd units
+legacy/            original Python server (schema reference)
 ```
 
 ## Development

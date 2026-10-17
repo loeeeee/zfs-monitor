@@ -9,16 +9,26 @@
 #   cp zfs-status-collector.timer /etc/systemd/system/
 #   systemctl daemon-reload
 #   systemctl enable --now zfs-status-collector.timer
+#
+# Requires: bash, jq, flock, zpool/zfs (OpenZFS >= 2.3 for JSON output);
+# smartctl optional.
+#
+# Environment overrides (e.g. via a systemd drop-in):
+#   ZFS_MONITOR_OUTPUT_DIR  output directory   (default /var/lib/zfs-monitor)
+#   ZFS_MONITOR_UID         owner of the files (default 101000)
+#   ZFS_MONITOR_GID         group of the files (default 101000)
+# 101000 is uid/gid 1000 inside an unprivileged Proxmox LXC, so a server
+# running there as a normal user can read a bind-mounted output dir.
 
 set -euo pipefail
 
-readonly OUTPUT_DIR="/var/lib/zfs-monitor"
+readonly OUTPUT_DIR="${ZFS_MONITOR_OUTPUT_DIR:-/var/lib/zfs-monitor}"
 readonly OUTPUT_FILE="${OUTPUT_DIR}/status.json"
 readonly EVENTS_FILE="${OUTPUT_DIR}/events.jsonl"
 readonly LOCK_FILE="${OUTPUT_DIR}/.collector.lock"
 readonly LOCK_FD=9
-readonly ZFS_USER=101000
-readonly ZFS_GROUP=101000
+readonly ZFS_USER="${ZFS_MONITOR_UID:-101000}"
+readonly ZFS_GROUP="${ZFS_MONITOR_GID:-101000}"
 
 SCRIPT_START_EPOCH=$(date +%s%3N)
 NOTICES=()
@@ -738,7 +748,8 @@ print_summary() {
 # --- Main ---
 
 main() {
-    # Acquire lock
+    # Acquire lock (the output dir holds the lock file, so it must exist first)
+    mkdir -p "$OUTPUT_DIR"
     exec 9>"$LOCK_FILE"
     if ! flock -n 9; then
         echo "[warn] Another collector instance is running (lock held on $LOCK_FILE). Exiting." >&2
