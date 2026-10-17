@@ -12,6 +12,7 @@ from zfs_monitor import config as cfgmod
 from zfs_monitor.server import Report, make_handler, metrics_text
 from zfs_monitor.summary import compute_summary
 from zfs_monitor.config import Thresholds
+from zfs_monitor.webpage import findings, fmt_age, render
 
 REPORT = {
     "pools": {"tank": {"health": "DEGRADED", "capacity_percent": 91, "fragmentation_percent": 60,
@@ -160,3 +161,25 @@ def test_smart_failed_and_pool_count():
     assert s["any_smart_failed"] and s["pool_count"] == 1
     assert not compute_summary({"smart": [{"smart_passed": None}]}, 0, False,
                                Thresholds())["any_smart_failed"]
+
+
+def test_ui_page_leads_with_what_is_wrong(http_server, tmp_path):
+    cfg, base = http_server
+    code, body = get(base + "/ui")
+    assert code == 503 and body.startswith("<!doctype html>") and "not found" in body
+    (tmp_path / "status.json").write_text(json.dumps(REPORT))
+    code, body = get(base + "/ui")
+    assert code == 200 and "problem(s) need attention" in body
+    assert "Pool tank is DEGRADED." in body
+    assert "Device tank/sda: FAULTED, 1 read errors, 2 checksum errors" in body
+    assert "Pool tank is 91% full." in body
+    assert "Pool tank is resilvering." in body
+
+
+def test_ui_healthy_report_and_escaping():
+    ok = {"pools": {"t": {"health": "ONLINE", "scan": {"days_since_last": 1},
+                          "devices": [{"name": "sda", "state": "ONLINE"}]}}}
+    assert findings(ok, Thresholds()) == [] and "All OK" in render(ok, Thresholds())
+    page = render({"pools": {"<x>": {"health": "FAULTED"}}}, Thresholds())
+    assert "<x>" not in page and "Pool &lt;x&gt; is FAULTED." in page
+    assert (fmt_age(59), fmt_age(3600), fmt_age(90000)) == ("59s", "1h", "1d 1h")

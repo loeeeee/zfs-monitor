@@ -4,6 +4,7 @@ GET /         the report plus ``_meta`` and ``summary`` (200, or 503 if stale)
 GET /status   alias of /
 GET /healthz  liveness: 200 while the report is fresh, else 503
 GET /metrics  Prometheus text exposition of the summary scalars
+GET /ui       human-readable HTML page that leads with what is wrong
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ from typing import Any
 
 from .config import Config
 from .summary import compute_summary
+from .webpage import render, render_error
 
 logger = logging.getLogger("zfs-monitor")
 
@@ -71,6 +73,9 @@ def make_handler(report: Report):
             self.wfile.write(body)
 
         def _err(self, code: int, error: str, detail: str | None = None) -> None:
+            if self.path.split("?", 1)[0] == "/ui":
+                return self._send(code, render_error(error, detail).encode(),
+                                  "text/html; charset=utf-8")
             body = {"error": error}
             if detail:
                 body["detail"] = detail
@@ -78,7 +83,7 @@ def make_handler(report: Report):
 
         def do_GET(self) -> None:  # noqa: N802 (stdlib API)
             path = self.path.split("?", 1)[0]
-            if path not in ("/", "/status", "/healthz", "/metrics"):
+            if path not in ("/", "/status", "/healthz", "/metrics", "/ui"):
                 return self._err(404, "not found")
             try:
                 doc, _, stale = report.load()
@@ -95,6 +100,9 @@ def make_handler(report: Report):
             if path == "/metrics":
                 return self._send(200, metrics_text(doc["summary"]).encode(),
                                   "text/plain; version=0.0.4")
+            if path == "/ui":
+                return self._send(code, render(doc, report.cfg.thresholds).encode(),
+                                  "text/html; charset=utf-8")
             self._send(code, json.dumps(doc, indent=2).encode())
 
         def log_message(self, fmt: str, *args: Any) -> None:

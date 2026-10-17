@@ -46,7 +46,7 @@ one can feed `zfs-monitor serve`.
 │  arcstats / zpool events     │              │  + summary (derived fields)  │
 └──────────────────────────────┘              └──────────────┬───────────────┘
                                                              │ HTTP
-                                         /status  /healthz  /metrics
+                                         /status  /healthz  /metrics  /ui
                                                              ▼
                                                 Gatus, Prometheus, curl, …
 ```
@@ -120,6 +120,7 @@ output directory or lock.
 | `/`, `/status` | full report + `_meta` + `summary`; **503 when stale** |
 | `/healthz` | `{"ok": true}` while fresh, 503 otherwise |
 | `/metrics` | Prometheus gauges `zfs_monitor_<field>` for every numeric/boolean summary field |
+| `/ui` | HTML page for people: one verdict, then a list of what is wrong (naming the pool, device or drive), then pool/drive/snapshot/ZED tables with only the bad cells highlighted. No JavaScript; refreshes every 60s; same 503 when stale |
 
 ### Alerting examples
 
