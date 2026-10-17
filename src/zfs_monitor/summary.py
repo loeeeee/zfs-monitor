@@ -15,6 +15,11 @@ from .config import Thresholds
 # ZED event classes that are routine bookkeeping noise.
 ZED_NOISE_CLASS = "sysevent.fs.zfs.history_event"
 
+# Device groups of a pool, in report order. "spare" holds hot spares, whose
+# healthy states are AVAIL/INUSE rather than ONLINE.
+DEVICE_GROUPS = ("devices", "special", "dedup", "slog", "l2arc", "spare")
+SPARE_OK_STATES = {"AVAIL", "INUSE", "ONLINE"}
+
 
 def walk_devices(devices: list[dict]) -> Iterator[dict]:
     """Yield all leaf devices from a nested device tree."""
@@ -26,24 +31,51 @@ def walk_devices(devices: list[dict]) -> Iterator[dict]:
             yield dev
 
 
+def walk_interior(devices: list[dict]) -> Iterator[dict]:
+    """Yield the non-leaf vdevs (mirror, raidz, ...) of a device tree."""
+    for dev in devices:
+        children = dev.get("children", [])
+        if children:
+            yield dev
+            yield from walk_interior(children)
+
+
+def _errors(dev: dict) -> int:
+    return sum(dev.get(k, 0) for k in ("read_errors", "write_errors", "checksum_errors"))
+
+
 def compute_summary(data: dict, age: float, stale: bool, t: Thresholds) -> dict[str, Any]:
     pools = data.get("pools", {})
     smart = data.get("smart", [])
     groups = data.get("snapshot_groups", [])
     arc = data.get("arc", {})
     zed = data.get("zed_events", [])
+    missing = list(data.get("missing_pools", []))
 
-    unhealthy = [n for n, p in pools.items() if p.get("health") != "ONLINE"]
+    # A configured pool that is not imported is as unhealthy as a faulted one.
+    unhealthy = [n for n, p in pools.items() if p.get("health") != "ONLINE"] + missing
 
-    read_e = write_e = csum_e = 0
+    read_e = write_e = csum_e = slow = 0
     non_online: list[str] = []
+    bad_spares: list[str] = []
+    interior_errors = False
     for pool in pools.values():
-        for dev in walk_devices(pool.get("devices", [])):
-            read_e += dev.get("read_errors", 0)
-            write_e += dev.get("write_errors", 0)
-            csum_e += dev.get("checksum_errors", 0)
-            if dev.get("state") != "ONLINE":
-                non_online.append(dev.get("name", "unknown"))
+        for group in DEVICE_GROUPS:
+            tree = pool.get(group, [])
+            for dev in walk_devices(tree):
+                read_e += dev.get("read_errors", 0)
+                write_e += dev.get("write_errors", 0)
+                csum_e += dev.get("checksum_errors", 0)
+                slow += dev.get("slow_ios", 0)
+                name = dev.get("was") or dev.get("name", "unknown")
+                if group == "spare":
+                    if dev.get("state") not in SPARE_OK_STATES:
+                        bad_spares.append(name)
+                elif dev.get("state") != "ONLINE":
+                    non_online.append(name)
+            # Errors ZFS could not pin on one disk are counted on the
+            # mirror/raidz vdev itself.
+            interior_errors = interior_errors or any(_errors(v) for v in walk_interior(tree))
 
     capacity = {n: p.get("capacity_percent", 0) for n, p in pools.items()}
     max_cap = max(capacity.values(), default=0)
@@ -60,6 +92,7 @@ def compute_summary(data: dict, age: float, stale: bool, t: Thresholds) -> dict[
     scrub_days = [p["scan"]["days_since_last"] for p in pools.values()
                   if (p.get("scan") or {}).get("days_since_last") is not None]
     frag = [p.get("fragmentation_percent", 0) for p in pools.values()]
+    data_errors = {n: p.get("error_count", 0) for n, p in pools.items()}
 
     return {
         "all_pools_healthy": not unhealthy,
@@ -118,4 +151,39 @@ def compute_summary(data: dict, age: float, stale: bool, t: Thresholds) -> dict[
         "pool_count": len(pools),
         # smartctl's own verdict; null verdicts (not reported) do not count.
         "any_smart_failed": any(d.get("smart_passed") is False for d in smart),
+
+        # Configured (collector.expected_pools) but not imported.
+        "missing_pools": missing,
+        "any_pool_missing": bool(missing),
+        # Permanent errors (damaged files); possible with the pool ONLINE and
+        # all device counters at zero.
+        "any_pool_data_errors": any(data_errors.values()),
+        "total_pool_data_errors": sum(data_errors.values()),
+        "pools_with_data_errors": [n for n, c in data_errors.items() if c],
+        # "pool:ZFS-8000-xx" for every pool zpool attaches a diagnosis to.
+        "pool_status_msgids": [f"{n}:{p['msgid']}" for n, p in pools.items()
+                               if p.get("msgid")],
+        "any_interior_vdev_errors": interior_errors,
+        "total_slow_ios": slow,
+        "unavailable_spares": bad_spares,
+        "any_scan_errors": any((p.get("scan") or {}).get("errors", 0)
+                               for p in pools.values()),
+        # Pools with no completed scrub on record (never scrubbed, or the last
+        # scrub predates the collector's state).
+        "pools_scrub_age_unknown": [n for n, p in pools.items()
+                                    if (p.get("scan") or {}).get("days_since_last") is None],
+        "total_trim_errors": sum((p.get("trim") or {}).get("errors", 0)
+                                 for p in pools.values()),
+        "pools_with_checkpoint": [n for n, p in pools.items() if p.get("checkpoint")],
+        "any_vdev_removal_in_progress": any(
+            (p.get("removal") or {}).get("in_progress") for p in pools.values()),
+        "any_raidz_expansion_in_progress": any(
+            (p.get("raidz_expand") or {}).get("in_progress") for p in pools.values()),
+        "any_smart_prefail": any(d.get("smart_prefail") for d in smart),
+        "any_smart_selftest_failed": any(d.get("smart_selftest_failed") for d in smart),
+        "smart_unreadable_count": sum(1 for d in smart if d.get("smart_readable") is False),
+        "zed_error_events_count": sum(1 for e in zed
+                                      if str(e.get("class", "")).startswith("ereport.")),
+        "zed_running": data.get("zed_running"),
+        "zfs_version_mismatch": bool(data.get("zfs_version_mismatch")),
     }

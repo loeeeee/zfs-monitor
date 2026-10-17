@@ -47,6 +47,45 @@ def test_summary_values():
     assert s["collector_age_seconds"] == 12.3
 
 
+def test_summary_covers_every_device_class_and_pool_diagnosis():
+    data = {
+        "pools": {"tank": {
+            "health": "ONLINE", "error_count": 3, "msgid": "ZFS-8000-8A",
+            "scan": {"state": "FINISHED", "errors": 2, "days_since_last": None},
+            "trim": {"errors": 1}, "checkpoint": {"state": "EXISTS"},
+            "removal": {"in_progress": True}, "raidz_expand": {"in_progress": False},
+            "devices": [{"name": "raidz1-0", "state": "ONLINE", "checksum_errors": 4,
+                         "children": [{"name": "sda", "state": "ONLINE", "slow_ios": 2}]}],
+            "special": [{"name": "mirror-1", "state": "DEGRADED", "children": [
+                {"name": "123", "was": "/dev/sdf1", "state": "UNAVAIL", "write_errors": 5}]}],
+            "l2arc": [{"name": "nvme0n1", "state": "FAULTED", "read_errors": 1}],
+            "spare": [{"name": "sdg", "state": "AVAIL"}, {"name": "sdh", "state": "FAULTED"}],
+        }},
+        "missing_pools": ["backup"],
+        "smart": [{"smart_readable": False}, {"smart_prefail": True},
+                  {"smart_selftest_failed": True}],
+        "zed_events": [{"class": "ereport.fs.zfs.io"}, {"class": "resource.fs.zfs.statechange"}],
+        "zed_running": False, "zfs_version_mismatch": True,
+    }
+    s = compute_summary(data, 0, False, Thresholds())
+    assert s["unhealthy_pools"] == ["backup"] and not s["all_pools_healthy"]
+    assert s["missing_pools"] == ["backup"] and s["any_pool_missing"]
+    assert s["any_pool_data_errors"] and s["pools_with_data_errors"] == ["tank"]
+    assert s["total_pool_data_errors"] == 3
+    assert s["pool_status_msgids"] == ["tank:ZFS-8000-8A"]
+    assert (s["total_write_errors"], s["total_read_errors"]) == (5, 1)
+    assert s["non_online_devices"] == ["/dev/sdf1", "nvme0n1"]
+    assert s["unavailable_spares"] == ["sdh"]
+    assert s["any_interior_vdev_errors"] and s["total_slow_ios"] == 2
+    assert s["any_scan_errors"] and s["pools_scrub_age_unknown"] == ["tank"]
+    assert s["total_trim_errors"] == 1 and s["pools_with_checkpoint"] == ["tank"]
+    assert s["any_vdev_removal_in_progress"] and not s["any_raidz_expansion_in_progress"]
+    assert s["smart_unreadable_count"] == 1
+    assert s["any_smart_prefail"] and s["any_smart_selftest_failed"]
+    assert s["zed_error_events_count"] == 1
+    assert s["zed_running"] is False and s["zfs_version_mismatch"]
+
+
 def test_thresholds_are_configurable():
     s = compute_summary(REPORT, 0, False, Thresholds(capacity_critical_percent=95))
     assert s["pool_capacity_warning"] and not s["pool_capacity_critical"]

@@ -43,6 +43,12 @@ class CollectorConfig:
     file_mode: int = 0o644
     # Collect SMART data via smartctl (skipped with a notice if it is missing).
     smart: bool = True
+    # Extra smartctl arguments per whole-disk path, for disks behind USB
+    # bridges or RAID controllers, e.g. {"/dev/sdc": ["-d", "sat"]}.
+    smart_device_args: dict[str, list[str]] = field(default_factory=dict)
+    # Pools that must be imported; one that is not shows up in
+    # missing_pools (zpool itself cannot report a pool it never imported).
+    expected_pools: list[str] = field(default_factory=list)
     # Seconds of zpool iostat sampling (0 disables the IO section).
     iostat_seconds: int = 1
     zed_event_limit: int = 50

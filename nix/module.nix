@@ -28,6 +28,8 @@ let
       collector = {
         output_dir = cfg.collector.outputDir;
         smart = cfg.collector.smart;
+        smart_device_args = cfg.collector.smartDeviceArgs;
+        expected_pools = cfg.collector.expectedPools;
         iostat_seconds = cfg.collector.iostatSeconds;
         zed_event_limit = cfg.collector.zedEventLimit;
         command_timeout_seconds = cfg.collector.commandTimeoutSeconds;
@@ -86,6 +88,23 @@ in
         type = types.bool;
         default = true;
         description = "Collect SMART data with smartctl.";
+      };
+      smartDeviceArgs = mkOption {
+        type = types.attrsOf (types.listOf types.str);
+        default = { };
+        example = {
+          "/dev/sdc" = [ "-d" "sat" ];
+        };
+        description = "Extra smartctl arguments per whole-disk path (USB bridges, RAID controllers).";
+      };
+      expectedPools = mkOption {
+        type = types.listOf types.str;
+        default = [ ];
+        example = [ "tank" ];
+        description = ''
+          Pools that must be imported. One that is not is reported in
+          `missing_pools` and makes `all_pools_healthy` false.
+        '';
       };
       iostatSeconds = mkOption {
         type = types.ints.unsigned;
