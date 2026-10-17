@@ -358,13 +358,15 @@ collect_snapshots_json() {
                 used: ($p.used.value | tonumber? // 0)
             }
         ] as $flat
+        | now as $now
         | {
             groups: ($flat | group_by(.dataset) | map({
                 dataset: .[0].dataset,
                 count: length,
                 newest_epoch: (max_by(.creation).creation),
                 oldest_epoch: (min_by(.creation).creation),
-                age_seconds: (now - (min_by(.creation).creation) | floor)
+                age_seconds: ($now - (min_by(.creation).creation) | floor),
+                newest_age_seconds: ($now - (max_by(.creation).creation) | floor)
             })),
             stats: {
                 total_count: ($flat | length),
@@ -424,16 +426,117 @@ collect_arc_json() {
 
 # --- SMART data ---
 
-get_device_paths() {
-    zpool status -j --json-int 2>/dev/null | jq -r '
-        def all_disks:
-            if .vdev_type == "disk" then [.]
-            elif .vdevs then [.vdevs | to_entries[] | .value | all_disks] | flatten
-            else [] end;
-        [.pools | to_entries[] | .value | all_disks | .[].path? ]
-        | map(select(. != null)) | unique | .[]
-    ' 2>/dev/null || zpool status 2>/dev/null | grep -oP '/dev/[^ ]+' | sort -u
+# Whole-disk device for a vdev path: follows /dev/disk/by-id symlinks and
+# strips partitions, so every disk is queried once by its real node.
+base_disk() {
+    local real sys
+    real=$(readlink -f -- "$1" 2>/dev/null) || real="$1"
+    sys="/sys/class/block/${real##*/}"
+    if [ -e "$sys/partition" ]; then
+        sys=$(readlink -f -- "$sys")
+        sys="${sys%/*}"
+        echo "/dev/${sys##*/}"
+    else
+        echo "$real"
+    fi
 }
+
+# Whole disks behind every leaf vdev of every class (data, special, dedup,
+# log, cache, spare).
+get_device_paths() {
+    local paths p
+    paths=$(zpool status -j --json-int 2>/dev/null | jq -r '
+        def leaves:
+            if (.vdevs // {}) == {} then [.]
+            else [.vdevs[] | leaves] | add end;
+        .pools[]
+        | (.vdevs // {})[], (.special // {})[], (.dedup // {})[],
+          (.logs // {})[], (.l2cache // {})[], (.spares // {})[]
+        | leaves[]
+        | select(.vdev_type == "disk" and .path != null) | .path
+    ' 2>/dev/null) || paths=$(zpool status -P 2>/dev/null | grep -oP '/dev/[^ ]+' || true)
+    while IFS= read -r p; do
+        [ -n "$p" ] && base_disk "$p"
+    done <<< "$paths" | sort -u
+}
+
+# Every smart[] entry carries all of these keys.
+readonly SMART_BLANK='{
+    "protocol": "unknown", "smart_passed": null, "model": "unknown",
+    "temperature_celsius": null, "power_on_hours": null,
+    "percentage_used": null, "available_spare": null,
+    "available_spare_threshold": null, "media_errors": 0, "critical_warning": 0,
+    "reallocated_sectors": 0, "pending_sectors": 0,
+    "offline_uncorrectable": 0, "udma_crc_errors": 0,
+    "ssd_life_left": null, "media_wearout": null, "grown_defects": null,
+    "smart_readable": false, "smartctl_exit_status": null,
+    "smart_prefail": false, "smart_past_failures": false,
+    "smart_selftest_failed": false, "failing_attributes": []
+}'
+
+# One smart[] entry from `smartctl --json` output; mirrors
+# Collector.smart_entry in src/zfs_monitor/collector.py.
+# shellcheck disable=SC2016
+readonly SMART_ENTRY_JQ='
+    def num: if type == "number" then . elif type == "string" then (tonumber? // 0) else 0 end;
+    def bit($n): (. / $n | floor) % 2 == 1;
+    def attr($id; $key):
+        [(.ata_smart_attributes.table // [])[] | select(.id == $id)
+         | if $key == "value" then .value else .raw.value end] | first;
+    . as $i
+    | .nvme_smart_health_information_log as $nvme
+    | (.smartctl.exit_status // $rc | num) as $st
+    | $blank + {
+        device_path: $dev, smart_readable: true, smartctl_exit_status: $st,
+        smart_passed: .smart_status.passed,
+        temperature_celsius: .temperature.current,
+        power_on_hours: .power_on_time.hours,
+        smart_prefail: ($st | bit(16)),
+        smart_past_failures: ($st | bit(32)),
+        smart_selftest_failed: ($st | bit(128))
+      }
+    | if $nvme == null and ($i | has("ata_smart_attributes") | not)
+         and $i.device.protocol == "SCSI" then
+        ($i.scsi_error_counter_log // {}) as $c
+        | . + {
+            protocol: "SCSI",
+            model: ($i.scsi_model_name // $i.model_name // "unknown"),
+            grown_defects: $i.scsi_grown_defect_list,
+            reallocated_sectors: ($i.scsi_grown_defect_list | num),
+            media_errors: ([$c.read, $c.write, $c.verify
+                            | .total_uncorrected_errors | num] | add)
+          }
+      elif $nvme != null then
+        ($i.nvme_self_test_log.table[0].self_test_result.value) as $last
+        | . + {
+            protocol: "NVMe", model: ($i.model_name // "unknown"),
+            percentage_used: $nvme.percentage_used,
+            available_spare: $nvme.available_spare,
+            available_spare_threshold: $nvme.available_spare_threshold,
+            media_errors: ($nvme.media_errors // 0),
+            critical_warning: ($nvme.critical_warning // 0),
+            smart_selftest_failed: (.smart_selftest_failed
+                                    or ([5, 6, 7] | index([$last]) != null))
+          }
+      else
+        . + {
+            protocol: "ATA",
+            model: ($i.model_name // $i.model_family // "unknown"),
+            temperature_celsius: (.temperature_celsius
+                                  // ($i | attr(194; "raw")) // ($i | attr(190; "raw"))),
+            reallocated_sectors: ($i | attr(5; "raw") | num),
+            pending_sectors: ($i | attr(197; "raw") | num),
+            offline_uncorrectable: ($i | attr(198; "raw") | num),
+            udma_crc_errors: ($i | attr(199; "raw") | num),
+            power_on_hours: (.power_on_hours // ($i | attr(9; "raw"))),
+            ssd_life_left: ($i | attr(231; "value")),
+            media_wearout: ($i | attr(233; "value")),
+            failing_attributes: [($i.ata_smart_attributes.table // [])[]
+                                 | select(.when_failed == "now")
+                                 | .name // (.id | tostring)]
+          }
+      end
+'
 
 collect_smart_json() {
     if [ "$HAS_SMARTCTL" != true ]; then
@@ -442,110 +545,39 @@ collect_smart_json() {
         return
     fi
 
-    local devices result="[]"
+    local devices dev dev_info rc status entry entries=()
     devices=$(get_device_paths)
-
-    if [ -z "$devices" ]; then
-        echo '[]'
-        return
-    fi
 
     while IFS= read -r dev; do
         [ -z "$dev" ] && continue
-        local dev_info
-        dev_info=$(smartctl -iA --json "$dev" 2>/dev/null) || {
+        # smartctl's exit code is a bitmask: non-zero with valid JSON (logged
+        # errors, a failing attribute, ...) still carries the data and must
+        # not drop the drive.
+        rc=0
+        dev_info=$(smartctl -H -i -A -l selftest -l error --json "$dev" 2>/dev/null) || rc=$?
+        status=$(jq -r '.smartctl.exit_status // empty' <<< "$dev_info" 2>/dev/null) || status=""
+        [[ "$status" =~ ^[0-9]+$ ]] || status=$rc
+        entry=""
+        # Bits 0/1: bad command line, or the device could not be opened.
+        if (( (status & 3) == 0 )); then
+            entry=$(jq -c --arg dev "$dev" --argjson rc "$rc" --argjson blank "$SMART_BLANK" \
+                "$SMART_ENTRY_JQ" <<< "$dev_info" 2>/dev/null) || entry=""
+        fi
+        # A disk that stops answering is kept as an unreadable entry instead
+        # of silently disappearing.
+        if [ -z "$entry" ]; then
             _notice "smartctl failed for $dev"
-            continue
-        }
-
-        local entry
-        entry=$(echo "$dev_info" | jq --arg dev "$dev" '
-            if .nvme_smart_health_information_log then
-                {
-                    device_path: $dev,
-                    protocol: "NVMe",
-                    model: (.model_name // "unknown"),
-                    temperature_celsius: (.temperature.current // null),
-                    power_on_hours: (.power_on_time.hours // null),
-                    percentage_used: (.nvme_smart_health_information_log.percentage_used // null),
-                    available_spare: (.nvme_smart_health_information_log.available_spare // null),
-                    available_spare_threshold: (.nvme_smart_health_information_log.available_spare_threshold // null),
-                    media_errors: (.nvme_smart_health_information_log.media_errors // 0),
-                    critical_warning: (.nvme_smart_health_information_log.critical_warning // 0),
-                    reallocated_sectors: 0,
-                    pending_sectors: 0,
-                    offline_uncorrectable: 0,
-                    udma_crc_errors: 0,
-                    ssd_life_left: null,
-                    media_wearout: null
-                }
-            else
-                {
-                    device_path: $dev,
-                    protocol: "ATA",
-                    model: (.model_name // .model_family // "unknown"),
-                    temperature_celsius: (
-                        .temperature.current //
-                        [.ata_smart_attributes.table[]?
-                            | select(.id == 194 or .id == 190)
-                            | .raw.value
-                        ] | first // null
-                    ),
-                    reallocated_sectors: (
-                        [.ata_smart_attributes.table[]?
-                            | select(.id == 5)
-                            | .raw.value
-                        ] | first // 0
-                    ) | tonumber,
-                    pending_sectors: (
-                        [.ata_smart_attributes.table[]?
-                            | select(.id == 197)
-                            | .raw.value
-                        ] | first // 0
-                    ) | tonumber,
-                    offline_uncorrectable: (
-                        [.ata_smart_attributes.table[]?
-                            | select(.id == 198)
-                            | .raw.value
-                        ] | first // 0
-                    ) | tonumber,
-                    udma_crc_errors: (
-                        [.ata_smart_attributes.table[]?
-                            | select(.id == 199)
-                            | .raw.value
-                        ] | first // 0
-                    ) | tonumber,
-                    power_on_hours: (
-                        [.ata_smart_attributes.table[]?
-                            | select(.id == 9)
-                            | .raw.value
-                        ] | first // null
-                    ),
-                    ssd_life_left: (
-                        [.ata_smart_attributes.table[]?
-                            | select(.id == 231)
-                            | .value
-                        ] | first // null
-                    ),
-                    media_wearout: (
-                        [.ata_smart_attributes.table[]?
-                            | select(.id == 233)
-                            | .value
-                        ] | first // null
-                    ),
-                    percentage_used: null,
-                    available_spare: null,
-                    available_spare_threshold: null,
-                    media_errors: 0,
-                    critical_warning: 0
-                }
-            end
-        ' 2>/dev/null) || continue
-
-        result=$(echo "$result" | jq --argjson entry "$entry" '. + [$entry]')
+            entry=$(jq -cn --arg dev "$dev" --argjson st "$status" --argjson blank "$SMART_BLANK" \
+                '$blank + {device_path: $dev, smartctl_exit_status: $st}')
+        fi
+        entries+=("$entry")
     done <<< "$devices"
 
-    echo "$result"
+    if [ "${#entries[@]}" -eq 0 ]; then
+        echo '[]'
+    else
+        printf '%s\n' "${entries[@]}" | jq -s '.'
+    fi
 }
 
 # --- ZED events ---
